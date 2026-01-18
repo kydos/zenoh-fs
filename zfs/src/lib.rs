@@ -124,8 +124,6 @@ pub fn zfsd_upload_frags_dir() -> String {
 //     format!("zfs/{}/{}/{}/{}", FRAGS_SUBDIR, UPLOAD_SUBDIR, key, ZFS_DIGEST)
 // }
 
-
-
 pub fn zfsd_download_frags_dir() -> String {
     format!("{}/{}/{}", zfsd_home(), FRAGS_SUBDIR, DOWNLOAD_SUBDIR)
 }
@@ -133,7 +131,6 @@ pub fn zfsd_download_frags_dir() -> String {
 pub fn zfsd_download_frags_dir_for_key(k: &str) -> String {
     format!("{}/{}", zfsd_download_frags_dir(), k)
 }
-
 
 pub fn zfsd_upload_frags_dir_for_key(k: &str) -> String {
     format!("{}/{}", zfsd_upload_frags_dir(), k)

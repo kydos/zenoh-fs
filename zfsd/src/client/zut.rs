@@ -5,9 +5,8 @@ use zfs::{zfsd_upload_digest_dir, UploadDigest};
 fn write_upload_digest(digest: UploadDigest) -> std::io::Result<()> {
     let uid = uuid::Uuid::new_v4();
     let fname = format!("{}/{}", zfsd_upload_digest_dir(), uid);
-    let bs = serde_json::to_vec(&digest).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let bs = serde_json::to_vec(&digest)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(&fname, &bs)?;
     Ok(())
 }

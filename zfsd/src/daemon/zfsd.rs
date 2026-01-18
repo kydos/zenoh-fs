@@ -140,15 +140,14 @@ fn parse_args() -> zenoh::config::Config {
         )
         .get_matches();
 
-    let mut config = args.get_one::<String>("config").map_or_else(
-        || zenoh::Config::default(),
-        |conf_file| {
-            zenoh::Config::from_file(conf_file).unwrap_or_else(|e| {
-                eprintln!("Failed to load config file '{}': {}", conf_file, e);
-                exit(1);
-            })
-        },
-    );
+    let mut config =
+        args.get_one::<String>("config")
+            .map_or_else(zenoh::Config::default, |conf_file| {
+                zenoh::Config::from_file(conf_file).unwrap_or_else(|e| {
+                    eprintln!("Failed to load config file '{}': {}", conf_file, e);
+                    exit(1);
+                })
+            });
 
     if let Some(mode) = args.get_one::<String>("mode") {
         let mode_value = match mode.as_str() {

@@ -1,8 +1,8 @@
+use crate::*;
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use std::{fmt::Write};
-use crate::*;
 use zenoh::qos::CongestionControl;
 
 use zenoh::query::*;
@@ -10,7 +10,8 @@ use zenoh::Session;
 pub async fn upload_fragment(z: &Session, path: &str, key: &str) {
     log::debug!(target: "transfer", "Uploading fragment {} for key {}", path, key);
     let path = PathBuf::from(path);
-    let bs = std::fs::read(path.as_path()).expect(&format!("path: {} should be valid", &path.to_string_lossy()));
+    let bs = std::fs::read(path.as_path())
+        .unwrap_or_else(|_| panic!("path: {} should be valid", &path.to_string_lossy()));
     z.put(key, bs)
         .congestion_control(CongestionControl::Block)
         .await
@@ -38,15 +39,16 @@ pub async fn download_fragment(z: Arc<Session>, key: String, n: u32) -> Result<(
     let replies = z
         .get(&frag_key.clone())
         .target(QueryTarget::DEFAULT)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     if let Ok(reply) = replies.recv_async().await {
         if let Ok(r) = reply.result() {
             let bs = r.payload().to_bytes();
 
-        tokio::fs::write(std::path::Path::new(&frag), bs)
-            .await
-            .map_err(|e| format!("{:?}", e))
+            tokio::fs::write(std::path::Path::new(&frag), bs)
+                .await
+                .map_err(|e| format!("{:?}", e))
         } else {
             Err(format!("Unable to retrieve fragment: {}", &frag_key))
         }
@@ -78,11 +80,7 @@ pub async fn download_fragmentation_digest(
     }
 }
 
-
-pub async fn download(
-    z: std::sync::Arc<Session>,
-    path_buf: PathBuf
-) -> Result<(), String> {
+pub async fn download(z: std::sync::Arc<Session>, path_buf: PathBuf) -> Result<(), String> {
     let bs = std::fs::read(path_buf.as_path()).unwrap();
     let download_spec = match serde_json::from_slice::<DownloadDigest>(&bs) {
         Ok(ds) => ds,
@@ -98,7 +96,7 @@ pub async fn download(
     }
 
     // let frag_digest = format!("{}/{}/{}", zfs_upload_frags_key_prefix(), download_spec.key, ZFS_DIGEST);
-    let frag_digest= zfs_frags_digest_for_key(&download_spec.key);
+    let frag_digest = zfs_frags_digest_for_key(&download_spec.key);
     log::debug!(target: "tranfer", "Get Frag Digest: {}", &frag_digest);
     let digest = download_fragmentation_digest(z.clone(), &frag_digest).await?;
 
