@@ -1,4 +1,5 @@
 use crate::*;
+use serde_json::de;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use zenoh::Session;
@@ -30,10 +31,14 @@ async fn cleanup_download(digest: &DownloadDigest, download_manifest: &str) -> R
     Ok(())
 }
 
-async fn compute_download_gaps(z: std::sync::Arc<Session>, digest: &DownloadDigest) -> Result<BTreeSet<usize>, String> {
+async fn compute_download_gaps(
+    z: std::sync::Arc<Session>,
+    digest: &DownloadDigest,
+) -> Result<BTreeSet<usize>, String> {
     let frags_path = zfsd_download_frags_dir_for_key(&digest.key);
     let frag_digest_key = zfs_frags_digest_for_key(&digest.key);
     if let Ok(defrag_digest) = download_fragmentation_digest(z, &frag_digest_key).await {
+        write_defrag_digest(&defrag_digest, &frag_digest_key).await?;
         let mut frag_set = BTreeSet::new();
         for i in 0..defrag_digest.fragments {
             frag_set.insert(i as usize);
@@ -78,7 +83,9 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
                 match registry.get_mut(entry.path().to_str().unwrap()) {
                     Some(reg_entry) => {
                         log::debug!("Registry {:?} exists for  <{:?}>", &reg_entry, &entry);
-                        if let Ok(gap_set) = compute_download_gaps(z.clone(), &reg_entry.digest).await {
+                        if let Ok(gap_set) =
+                            compute_download_gaps(z.clone(), &reg_entry.digest).await
+                        {
                             let mut gaps: Vec<usize> = gap_set.into_iter().collect();
                             if gaps.is_empty() {
                                 log::debug!("Found <<NO GAPS>> for {:?}", &reg_entry.digest);
@@ -86,7 +93,10 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
                                     .await
                                     .unwrap();
                             } else {
-                                log::info!("Found <<GAPS>> for {:?},  repairing", &reg_entry.digest);
+                                log::info!(
+                                    "Found <<GAPS>> for {:?},  repairing",
+                                    &reg_entry.digest
+                                );
                                 gaps.sort_unstable();
                                 let new_gap_num = gaps.len();
                                 let filtered_gaps: Vec<usize> = gaps
@@ -164,7 +174,10 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
                             );
                             registry.insert(entry.path().to_str().unwrap().into(), sre);
                         } else {
-                            log::info!("Sanitizer completed downloading for {:?} -- cleaning up.", &digest.key);
+                            log::info!(
+                                "Sanitizer completed downloading for {:?} -- cleaning up.",
+                                &digest.key
+                            );
                             cleanup_download(&digest, entry.path().to_str().unwrap())
                                 .await
                                 .unwrap();
