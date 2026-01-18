@@ -48,7 +48,7 @@ zenohd -c zenoh.json5
 The `zfsd` daemon monitors directories for files to upload and manages downloads:
 
 ```bash
-./target/release/zfsd
+./target/release/zfsd -c zenoh.json5 -r <zenohd-locator>
 ```
 
 ### Uploading Files
