@@ -141,3 +141,186 @@ pub async fn defragment(key: &str, dest: &str) -> Result<bool, String> {
         Err(e) => Err(e),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::io::Write;
+
+    fn create_test_dir() -> PathBuf {
+        let test_id = uuid::Uuid::new_v4().to_string();
+        let test_dir = std::env::temp_dir().join(format!("zfs_test_{}", test_id));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        test_dir
+    }
+
+    fn cleanup_test_dir(path: &Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn test_write_and_read_defrag_digest() {
+        let test_dir = create_test_dir();
+
+        let digest = FragmentationDigest {
+            name: "test/key".to_string(),
+            size: 1024,
+            crc: 12345678,
+            fragment_size: 256,
+            fragments: 4,
+        };
+
+        let result = write_defrag_digest(&digest, test_dir.to_str().unwrap()).await;
+        assert!(result.is_ok());
+
+        let read_result = read_defrag_digest(test_dir.to_str().unwrap()).await;
+        assert!(read_result.is_ok());
+
+        let read_digest = read_result.unwrap();
+        assert_eq!(read_digest.name, digest.name);
+        assert_eq!(read_digest.size, digest.size);
+        assert_eq!(read_digest.crc, digest.crc);
+        assert_eq!(read_digest.fragment_size, digest.fragment_size);
+        assert_eq!(read_digest.fragments, digest.fragments);
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[tokio::test]
+    async fn test_read_defrag_digest_missing_file() {
+        let test_dir = create_test_dir();
+
+        let result = read_defrag_digest(test_dir.to_str().unwrap()).await;
+        assert!(result.is_err());
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_fragment_and_defragment_roundtrip() {
+        let test_dir = create_test_dir();
+        let test_id = test_dir.file_name().unwrap().to_str().unwrap();
+
+        // Set ZFSD_HOME to our test directory for isolation
+        std::env::set_var("ZFSD_HOME", test_dir.to_str().unwrap());
+
+        // Create a test file with known content
+        let source_file = test_dir.join("source.bin");
+        let test_data: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+        {
+            let mut f = std::fs::File::create(&source_file).unwrap();
+            f.write_all(&test_data).unwrap();
+        }
+
+        // Fragment the file
+        let zkey = format!("{}/testkey", test_id);
+        let fragment_size = 256;
+        let result = fragment(source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        assert!(result.is_ok());
+
+        let digest = result.unwrap();
+        assert_eq!(digest.fragment_size, fragment_size);
+        assert_eq!(digest.fragments, 4); // 1000 bytes / 256 = 3.9, so 4 fragments
+
+        // Copy fragments to download location to simulate download
+        let upload_frags = zfsd_upload_frags_dir_for_key(&zkey);
+        let download_frags = zfsd_download_frags_dir_for_key(&zkey);
+        std::fs::create_dir_all(&download_frags).unwrap();
+
+        for i in 0..digest.fragments {
+            let src = format!("{}/{}", upload_frags, i);
+            let dst = format!("{}/{}", download_frags, i);
+            std::fs::copy(&src, &dst).unwrap();
+        }
+        // Write digest to download location
+        write_defrag_digest(&digest, &download_frags).await.unwrap();
+
+        // Defragment the file
+        let dest_file = test_dir.join("dest.bin");
+        let defrag_result = defragment(&zkey, dest_file.to_str().unwrap()).await;
+        assert!(defrag_result.is_ok());
+        assert!(defrag_result.unwrap()); // CRC should match
+
+        // Verify content matches
+        let restored_data = std::fs::read(&dest_file).unwrap();
+        assert_eq!(restored_data, test_data);
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_fragment_small_file() {
+        let test_dir = create_test_dir();
+        let test_id = test_dir.file_name().unwrap().to_str().unwrap();
+
+        std::env::set_var("ZFSD_HOME", test_dir.to_str().unwrap());
+
+        // Create a small file (smaller than fragment size)
+        let source_file = test_dir.join("small.bin");
+        let test_data = b"Hello, World!";
+        {
+            let mut f = std::fs::File::create(&source_file).unwrap();
+            f.write_all(test_data).unwrap();
+        }
+
+        let zkey = format!("{}/smallkey", test_id);
+        let fragment_size = 1024; // Larger than file
+        let result = fragment(source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        assert!(result.is_ok());
+
+        let digest = result.unwrap();
+        assert_eq!(digest.fragments, 1); // Should be single fragment
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_fragment_exact_multiple() {
+        let test_dir = create_test_dir();
+        let test_id = test_dir.file_name().unwrap().to_str().unwrap();
+
+        std::env::set_var("ZFSD_HOME", test_dir.to_str().unwrap());
+
+        // Create a file that's exactly a multiple of fragment size
+        let source_file = test_dir.join("exact.bin");
+        let test_data: Vec<u8> = vec![0xAB; 512];
+        {
+            let mut f = std::fs::File::create(&source_file).unwrap();
+            f.write_all(&test_data).unwrap();
+        }
+
+        let zkey = format!("{}/exactkey", test_id);
+        let fragment_size = 128;
+        let result = fragment(source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        assert!(result.is_ok());
+
+        let digest = result.unwrap();
+        assert_eq!(digest.fragments, 4); // 512 / 128 = 4 fragments
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_fragmentation_digest_serialization() {
+        let digest = FragmentationDigest {
+            name: "test/key".to_string(),
+            size: 2048,
+            crc: 9876543210,
+            fragment_size: 512,
+            fragments: 4,
+        };
+
+        let json = serde_json::to_string(&digest).unwrap();
+        let parsed: FragmentationDigest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.name, digest.name);
+        assert_eq!(parsed.size, digest.size);
+        assert_eq!(parsed.crc, digest.crc);
+        assert_eq!(parsed.fragment_size, digest.fragment_size);
+        assert_eq!(parsed.fragments, digest.fragments);
+    }
+}

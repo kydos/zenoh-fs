@@ -16,9 +16,9 @@ pub const FRAGS_SUBDIR: &str = "frags";
 pub const DIGEST_SUBDIR: &str = "digest";
 pub const FRAGMENT_SIZE: usize = 32 * 1024;
 
-///
 /// The ZFS structure is as follows:
 ///
+/// ```text
 /// .zfsd
 ///   +- digest
 ///   |    +- download
@@ -27,21 +27,22 @@ pub const FRAGMENT_SIZE: usize = 32 * 1024;
 ///   +- frags
 ///        +- download
 ///        +- upload
+/// ```
 ///
 /// The structure used on the Zenoh filesystem storage is the following:
 ///
-///     zfs
-///      +- some
-///           +- key
-///                +- zfs-digest
-///                +- 0
-///                +- 1
-///                +- ..
-///                +- n
-///
+/// ```text
+/// zfs
+///  +- some
+///       +- key
+///            +- zfs-digest
+///            +- 0
+///            +- 1
+///            +- ..
+///            +- n
+/// ```
 ///
 /// Where zfs is just the top level directory under the Zenoh File System backend.
-///
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FragmentationDigest {
     pub name: String,
@@ -119,14 +120,6 @@ pub fn zfsd_download_digest_dir() -> String {
 pub fn zfsd_upload_frags_dir() -> String {
     format!("{}/{}/{}", zfsd_home(), FRAGS_SUBDIR, UPLOAD_SUBDIR)
 }
-// These shouldn't be needed any more:
-
-// pub fn zfs_upload_frags_key_prefix() -> String {
-//     format!("zfs/{}/{}", FRAGS_SUBDIR, UPLOAD_SUBDIR)
-// }
-// pub fn zfs_upload_frags_digest_key(key: &str) -> String {
-//     format!("zfs/{}/{}/{}/{}", FRAGS_SUBDIR, UPLOAD_SUBDIR, key, ZFS_DIGEST)
-// }
 
 pub fn zfsd_download_frags_dir() -> String {
     format!("{}/{}/{}", zfsd_home(), FRAGS_SUBDIR, DOWNLOAD_SUBDIR)

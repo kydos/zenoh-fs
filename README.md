@@ -1,79 +1,137 @@
 # zenoh-fs
-A zenoh based distributed file system supporting extremely large data files. 
-Specifically, zenoh-fs provides a series of utilities as part of the ```zfs``` crate 
-to fragment and reassembly large files as well as to upload and download from zenoh 
-storages.
 
-```zenoh-fs``` also provides a small deamon, namely ```zfsd``` that allows you to automatically
-upload/download later files from zenoh storages.
+[![CI](https://github.com/eclipse-zenoh/zenoh-fs/actions/workflows/ci.yml/badge.svg)](https://github.com/eclipse-zenoh/zenoh-fs/actions/workflows/ci.yml)
 
+A Zenoh-based distributed file system supporting extremely large data files.
 
-## Getting Started
-### Prerequisities
-In what follows we will assume that you have a zenoh infrastructure up and running. 
-If you want to test on your standalone machine, the simplest way is to start a 
-```zenoh``` router and enable the loading of the storage plugin. 
+`zenoh-fs` provides utilities to fragment and reassemble large files for efficient transfer over [Zenoh](https://zenoh.io/) pub/sub infrastructure, enabling seamless upload and download to/from Zenoh storages.
 
-To install zenoh follow the instructions available [here](https://github.com/eclipse-zenoh/zenoh).
-You'll also need to install the filesystem back-end which is available [here](https://github.com/eclipse-zenoh/zenoh-backend-filesystem)
+## Architecture
 
-Make sure that all plugin libraries are available under:
+The project consists of the following components:
 
-    ~/.zenoh/lib
+| Component | Description |
+|-----------|-------------|
+| `zfs` | Core library providing file fragmentation, reassembly, and transfer utilities |
+| `zfsd` | Daemon that monitors directories and automatically uploads/downloads files |
+| `zut` | CLI utility for uploading files to Zenoh storages |
+| `zet` | CLI utility for downloading files from Zenoh storages |
 
-Then simply start the zenoh router using the following command:
+## Prerequisites
 
-    $ /path/to/zenoh/zenohd -c zenoh.json5
+- **Rust toolchain**: Install via [rustup](https://www.rust-lang.org/tools/install)
+- **Zenoh router**: Install from [eclipse-zenoh/zenoh](https://github.com/eclipse-zenoh/zenoh)
+- **Zenoh filesystem backend**: Install from [eclipse-zenoh/zenoh-backend-filesystem](https://github.com/eclipse-zenoh/zenoh-backend-filesystem)
 
-This command will setup the proper storage filesystem. 
+Ensure all Zenoh plugin libraries are available under `~/.zenoh/lib`.
 
-## Building ZFS
-In order to build zfs you need to install rust. To do so please follow the \
-details provided [here](https://www.rust-lang.org/tools/install).
+## Building
 
-Once installed ```rust``` then do:
+```bash
+cargo build --release --all
+```
 
-    zenoh-fs$ cargo build --release --all
+Binaries will be available in `./target/release/`.
 
-### Starting zfsd
-Assuming you have compiled from sources  then simply do:
+## Usage
 
-    zenoh-fs$ ./target/release/zfsd  
+### Starting Zenoh Router
 
-### Uploading a file 
-To upload a file use the `zut` utility as follows:
- 
-    zenoh-fs$ ./target/release/zut -k test/zut -p ./target/release/zut
+Start the Zenoh router with the storage plugin configured:
 
-This command is uploading the file `./target/release/zut` into the `zfsd`. 
+```bash
+zenohd -c zenoh.json5
+```
 
-### Downloading a file
-To download a file use the `zet` utility as follows:
+### Starting the Daemon
 
-    zenoh-fs$ ./target/release/zet -k test/zut -p ./zut2
+The `zfsd` daemon monitors directories for files to upload and manages downloads:
 
-This command will provision the download of `test/zut` and will de-fragment and save it as
-`./zut2` once done. 
+```bash
+./target/release/zfsd
+```
 
-At this point, to verify that all went fine do:
+### Uploading Files
 
-    zenoh-fs$ chmod +x ./zut2
-    zenoh-fs$ ./zut2 -h
-    zut: zfs utility to upload files.
-    
-    USAGE:
-    zut [OPTIONS] --key <KEY>... --path <PATH>...
-    
-    FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
-    
-    OPTIONS:
-    -f, --fragment <BYTES>    The size of the fragment [default: 32768]
-    -k, --key <KEY>...        The key under which this file will be stored in zfs.
-    -p, --path <PATH>...      The path for the file to upload.
+Use `zut` to upload a file:
 
-## Basic Deployment
-You can try this locally with a single zenoh router. Or else you can start a zenoh route on one machine, start 
-two `zfsd` on two different machines and then use `zut` and `zet` to upload and download files.
+```bash
+./target/release/zut -k <key> -p <file_path>
+```
 
+**Example:**
+```bash
+./target/release/zut -k mydata/document -p ./large_file.bin
+```
+
+**Options:**
+- `-k, --key <KEY>` - The key under which the file will be stored
+- `-p, --path <PATH>` - Path to the file to upload
+- `-f, --fragment <BYTES>` - Fragment size in bytes (default: 32768)
+
+### Downloading Files
+
+Use `zet` to download a file:
+
+```bash
+./target/release/zet -k <key> -p <destination>
+```
+
+**Example:**
+```bash
+./target/release/zet -k mydata/document -p ./downloaded_file.bin
+```
+
+**Options:**
+- `-k, --key <KEY>` - The key of the file to download
+- `-p, --path <PATH>` - Destination path for the downloaded file
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ZFSD_HOME` | Directory for zfsd working files | `~/.zfsd` |
+| `ZBACKEND_FS_ROOT` | Root directory for Zenoh filesystem backend | (Zenoh default) |
+
+### Zenoh Configuration
+
+The included `zenoh.json5` configures:
+- Filesystem storage backend for the `zfs/**` key expression
+- REST API on port 8000
+
+## Directory Structure
+
+### Local (`$ZFSD_HOME`)
+
+```
+.zfsd/
+├── digest/
+│   ├── download/    # Download task metadata
+│   └── upload/      # Upload task metadata
+└── frags/
+    ├── download/    # Downloaded fragments (pending reassembly)
+    └── upload/      # Fragments awaiting upload
+```
+
+### Zenoh Storage
+
+```
+zfs/
+└── <key>/
+    ├── zfs-digest   # File metadata (name, size, checksum, fragment count)
+    ├── 0            # Fragment 0
+    ├── 1            # Fragment 1
+    └── ...          # Additional fragments
+```
+
+## Deployment
+
+**Local testing:** Run a single Zenoh router with `zfsd` on the same machine.
+
+**Distributed setup:** Start a Zenoh router, then run `zfsd` instances on multiple machines. Use `zut` on one machine to upload and `zet` on another to download.
+
+## License
+
+This project is licensed under the Eclipse Public License 2.0 - see the [LICENSE](LICENSE) file for details.
