@@ -37,7 +37,8 @@ async fn compute_download_gaps(
     let frags_path = zfsd_download_frags_dir_for_key(&digest.key);
     let frag_digest_key = zfs_frags_digest_for_key(&digest.key);
     if let Ok(defrag_digest) = download_fragmentation_digest(z, &frag_digest_key).await {
-        write_defrag_digest(&defrag_digest, &frag_digest_key).await?;
+        // let frag_path = zfs_download_frags_digest_for_key(&digest.key);
+        // write_defrag_digest(&defrag_digest, &frag_path).await?;
         let mut frag_set = BTreeSet::new();
         for i in 0..defrag_digest.fragments {
             frag_set.insert(i as usize);

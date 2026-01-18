@@ -97,8 +97,12 @@ pub fn zfsd_home() -> String {
 pub fn zfs_key(key: &str) -> String {
     format!("{}/{}", ZFS_BASE_DIR, key)
 }
+
 pub fn zfs_frags_digest_for_key(key: &str) -> String {
     format!("{}/{}/{}", ZFS_BASE_DIR, key, ZFS_DIGEST)
+}
+pub fn zfs_download_frags_digest_for_key(key: &str) -> String {
+    format!("{}/{}", key, ZFS_DIGEST)
 }
 pub fn zfs_nth_frag_key(key: &str, n: u32) -> String {
     format!("{}/{}/{}", ZFS_BASE_DIR, key, n)

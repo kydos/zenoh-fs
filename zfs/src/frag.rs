@@ -107,9 +107,16 @@ pub async fn write_defrag_digest(
 ) -> Result<(), String> {
     let bs = serde_json::to_vec(&digest).unwrap();
     let digest_path = format!("{}/{}", base_path, ZFS_DIGEST);
-    let mut fdigest = File::create(Path::new(&digest_path)).await.unwrap();
-    fdigest.write_all(&bs).await.unwrap();
-    Ok(())
+    match File::create(Path::new(&digest_path)).await {
+        Ok(mut fdigest) => {
+            fdigest.write_all(&bs).await.unwrap();
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "Could not create file: {:?} because of {:?}",
+            &digest_path, e
+        )),
+    }
 }
 pub async fn defragment(key: &str, dest: &str) -> Result<bool, String> {
     let fragments_path = zfsd_download_frags_dir_for_key(key);
