@@ -18,7 +18,7 @@ fn init() -> Result<()> {
 #[tokio::main]
 async fn main() {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
         .format_target(true)
         .format_timestamp_secs()
         .init();
@@ -91,10 +91,9 @@ async fn main() {
                     if !fpath.contains(DOWNLOAD_SUBDIR) {
                         match fpath.find(FRAGS_SUBDIR) {
                             Some(_) => match zfsd_upload_frag_dir_to_key(fpath) {
-                                Some(key_suffix) => {
-                                    let key = zfs_key(&key_suffix);
-                                    log::debug!(target: "zfsd", "Uploading fragment : {:?} as {:?}", path, &key);
-                                    upload_fragment(&z, fpath, &key).await;
+                                Some(zfs_key) => {
+                                    log::debug!(target: "zfsd", "Uploading fragment : {:?} as {:?}", path, &zfs_key);
+                                    upload_fragment(&z, fpath, &zfs_key).await;
                                 }
                                 None => {
                                     log::warn!(target: "zfsd", "Unable to extract key from {}", fpath);

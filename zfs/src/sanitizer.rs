@@ -6,7 +6,8 @@ use zenoh::Session;
 async fn cleanup_download(digest: &DownloadDigest, download_manifest: &str) -> Result<(), String> {
     // Check first if the file has been really created
     let target = std::path::Path::new(&digest.path);
-    let frags_path = zfsd_download_frags_dir_for_key(&digest.key);
+    let zfs_key = ZFSKey::from(&digest.key);
+    let frags_path = zfsd_download_frags_dir_for_key(&zfs_key);
     let fmanif_exists = std::path::Path::new(&format!("{}/{}", &frags_path, ZFS_DIGEST)).exists();
     if target.exists() && fmanif_exists {
         let defrag_digest = read_defrag_digest(&frags_path).await.unwrap();
@@ -14,7 +15,7 @@ async fn cleanup_download(digest: &DownloadDigest, download_manifest: &str) -> R
 
         tokio::time::sleep(Duration::from_secs(2 * FS_EVT_DELAY)).await;
         if size == defrag_digest.size {
-            let frags_path = zfsd_download_frags_dir_for_key(&digest.key);
+            let frags_path = zfsd_download_frags_dir_for_key(&zfs_key);
             let _ignore = std::fs::remove_dir_all(&frags_path);
             let _ignore = std::fs::remove_file(std::path::Path::new(download_manifest));
         } else {
@@ -34,8 +35,9 @@ async fn compute_download_gaps(
     z: std::sync::Arc<Session>,
     digest: &DownloadDigest,
 ) -> Result<BTreeSet<usize>, String> {
-    let frags_path = zfsd_download_frags_dir_for_key(&digest.key);
-    let frag_digest_key = zfs_frags_digest_for_key(&digest.key);
+    let zfs_key = ZFSKey::from(&digest.key);
+    let frags_path = zfsd_download_frags_dir_for_key(&zfs_key);
+    let frag_digest_key = zfs_frags_digest_for_key(&zfs_key);
     if let Ok(defrag_digest) = download_fragmentation_digest(z, &frag_digest_key).await {
         let mut frag_set = BTreeSet::new();
         for i in 0..defrag_digest.fragments {
@@ -81,6 +83,8 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
                 match registry.get_mut(entry.path().to_str().unwrap()) {
                     Some(reg_entry) => {
                         log::debug!("Registry {:?} exists for  <{:?}>", &reg_entry, &entry);
+                        let zfs_key = ZFSKey::from(&reg_entry.digest.key);
+
                         if let Ok(gap_set) =
                             compute_download_gaps(z.clone(), &reg_entry.digest).await
                         {
@@ -114,7 +118,7 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
                                     if reg_entry.stuck_cycles % STUCK_CYCLES_RESET == 0 {
                                         log::info!(
                                             "Gaps recovery for {:?} seems to have stalled, this may be due to process restart of disconnections. Restarting fragment sanitiser.",
-                                            &reg_entry.digest.key);
+                                            &zfs_key);
                                         reg_entry.tide_level = 0;
                                         let n = std::cmp::min(
                                             gaps.len(),
@@ -127,7 +131,7 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
                                             reg_entry.tide_level = *gaps.get(i).unwrap();
                                             tokio::task::spawn(download_fragment(
                                                 z.clone(),
-                                                reg_entry.digest.key.clone(),
+                                                zfs_key.clone(),
                                                 reg_entry.tide_level as u32,
                                             ));
                                         }

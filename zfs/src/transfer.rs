@@ -7,23 +7,23 @@ use zenoh::qos::CongestionControl;
 
 use zenoh::query::*;
 use zenoh::Session;
-pub async fn upload_fragment(z: &Session, path: &str, key: &str) {
-    log::debug!(target: "transfer", "Uploading fragment {} for key {}", path, key);
+pub async fn upload_fragment(z: &Session, path: &str, zfs_key: &ZFSKey) {
+    log::debug!(target: "transfer", "Uploading fragment {} for key {:?}", path, zfs_key);
     let path = PathBuf::from(path);
     let bs = std::fs::read(path.as_path())
         .unwrap_or_else(|_| panic!("path: {} should be valid", &path.to_string_lossy()));
-    z.put(key, bs)
+    z.put(&zfs_key.0, bs)
         .congestion_control(CongestionControl::Block)
         .await
         .unwrap();
 }
 
-pub async fn download_fragment(z: Arc<Session>, key: String, n: u32) -> Result<(), String> {
-    log::debug!(target: "transfer", "Downloading fragment # {} for key {}", n, &key);
+pub async fn download_fragment(z: Arc<Session>, zfs_key: ZFSKey, n: u32) -> Result<(), String> {
+    log::debug!(target: "transfer", "Downloading fragment # {} for key {:?}", n, &zfs_key);
 
-    let path = zfsd_download_frags_dir_for_key(&key);
+    let path = zfsd_download_frags_dir_for_key(&zfs_key);
     // let frag_key = format!("{}/{}/{}", zfs_upload_frags_key_prefix(), key, n);
-    let frag_key = zfs_nth_frag_key(&key, n);
+    let frag_key = zfs_nth_frag_key(&zfs_key, n);
     let frag = format!("{}/{}", &path, n);
     if Path::new(&frag).exists() {
         log::debug!(
@@ -35,7 +35,7 @@ pub async fn download_fragment(z: Arc<Session>, key: String, n: u32) -> Result<(
 
     // First check if the fragment is already there -- there is potential concurrency between
     // the sanitizer and the regular download process.
-    log::debug!(target: "zfsd", "Retrieving fragment: {}/{}", key, n);
+    log::debug!(target: "zfsd", "Retrieving fragment: {:?}/{}", &zfs_key, n);
     let replies = z
         .get(&frag_key.clone())
         .target(QueryTarget::DEFAULT)
@@ -80,13 +80,16 @@ pub async fn download_fragmentation_digest(
     }
 }
 
-pub async fn download(z: std::sync::Arc<Session>, path_buf: PathBuf) -> Result<(), String> {
-    let bs = std::fs::read(path_buf.as_path()).unwrap();
+pub async fn download(
+    z: std::sync::Arc<Session>,
+    download_spec_path: PathBuf,
+) -> Result<(), String> {
+    let bs = std::fs::read(download_spec_path.as_path()).unwrap();
     let download_spec = match serde_json::from_slice::<DownloadDigest>(&bs) {
         Ok(ds) => ds,
         Err(e) => return Err(format!("{:?}", e)),
     };
-
+    let zfs_key = ZFSKey::from(&download_spec.key);
     if std::path::Path::new(&download_spec.path).exists() {
         println!(
             "The file {} has already been downloaded.",
@@ -96,11 +99,11 @@ pub async fn download(z: std::sync::Arc<Session>, path_buf: PathBuf) -> Result<(
     }
 
     // let frag_digest = format!("{}/{}/{}", zfs_upload_frags_key_prefix(), download_spec.key, ZFS_DIGEST);
-    let frag_digest = zfs_frags_digest_for_key(&download_spec.key);
+    let frag_digest = zfs_frags_digest_for_key(&zfs_key);
     log::debug!(target: "tranfer", "Get Frag Digest: {}", &frag_digest);
     let digest = download_fragmentation_digest(z.clone(), &frag_digest).await?;
 
-    let frags_dir = zfsd_download_frags_dir_for_key(&download_spec.key);
+    let frags_dir = zfsd_download_frags_dir_for_key(&zfs_key);
     tokio::fs::create_dir_all(std::path::Path::new(&frags_dir))
         .await
         .unwrap();
@@ -113,7 +116,7 @@ pub async fn download(z: std::sync::Arc<Session>, path_buf: PathBuf) -> Result<(
 
     write_defrag_digest(&digest, &frags_dir).await?;
     for i in 0..digest.fragments {
-        download_fragment(z.clone(), download_spec.key.clone(), i).await?;
+        download_fragment(z.clone(), zfs_key.clone(), i).await?;
         bar.inc(1);
     }
 

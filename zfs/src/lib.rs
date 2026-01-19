@@ -26,6 +26,15 @@ pub const FRAGMENT_SIZE: usize = 32 * 1024;
 ///   |
 ///   +- frags
 ///        +- download
+///        |    +- zfs
+///        |       +- some
+///        |            +- key
+///        |                +- zfs-digest
+///        |                +- 0
+///        |                +- 1
+///        |                +- ..
+///        |                +- n
+///        |
 ///        +- upload
 /// ```
 ///
@@ -81,6 +90,24 @@ mod transfer;
 pub use frag::*;
 pub use sanitizer::{download_sanitizer, upload_sanitizer};
 pub use transfer::*;
+#[derive(Debug, Clone)]
+pub struct ZFSKey(String);
+
+impl From<&str> for ZFSKey {
+    fn from(key: &str) -> Self {
+        ZFSKey(format!("{}/{}", ZFS_BASE_DIR, key))
+    }
+}
+impl From<String> for ZFSKey {
+    fn from(key: String) -> Self {
+        ZFSKey(format!("{}/{}", ZFS_BASE_DIR, key))
+    }
+}
+impl From<&String> for ZFSKey {
+    fn from(key: &String) -> Self {
+        ZFSKey(format!("{}/{}", ZFS_BASE_DIR, key.clone()))
+    }
+}
 
 pub fn zfs_err2str<E: Debug>(e: E) -> String {
     format!("{:?}", e)
@@ -95,18 +122,19 @@ pub fn zfsd_home() -> String {
 }
 
 // ZFS key-related functions
-pub fn zfs_key(key: &str) -> String {
-    format!("{}/{}", ZFS_BASE_DIR, key)
-}
+// pub fn zfs_key(key: &str) -> String {
+//     format!("{}/{}", ZFS_BASE_DIR, key)
+// }
 
-pub fn zfs_frags_digest_for_key(key: &str) -> String {
-    format!("{}/{}/{}", ZFS_BASE_DIR, key, ZFS_DIGEST)
+pub fn zfs_frags_digest_for_key(key: &ZFSKey) -> String {
+    format!("{}/{}", &key.0, ZFS_DIGEST)
 }
-pub fn zfs_download_frags_digest_for_key(key: &str) -> String {
-    format!("{}/{}", key, ZFS_DIGEST)
-}
-pub fn zfs_nth_frag_key(key: &str, n: u32) -> String {
-    format!("{}/{}/{}", ZFS_BASE_DIR, key, n)
+// pub fn zfs_download_frags_digest_for_key(key: &str) -> String {
+//     format!("{}/{}", key, ZFS_DIGEST)
+// }
+
+pub fn zfs_nth_frag_key(key: &ZFSKey, n: u32) -> String {
+    format!("{}/{}", &key.0, n)
 }
 
 // ZFSD path-related functions
@@ -125,17 +153,17 @@ pub fn zfsd_download_frags_dir() -> String {
     format!("{}/{}/{}", zfsd_home(), FRAGS_SUBDIR, DOWNLOAD_SUBDIR)
 }
 
-pub fn zfsd_download_frags_dir_for_key(k: &str) -> String {
-    format!("{}/{}", zfsd_download_frags_dir(), k)
+pub fn zfsd_download_frags_dir_for_key(k: &ZFSKey) -> String {
+    format!("{}/{}", zfsd_download_frags_dir(), &k.0)
 }
 
-pub fn zfsd_upload_frags_dir_for_key(k: &str) -> String {
-    format!("{}/{}", zfsd_upload_frags_dir(), k)
+pub fn zfsd_upload_frags_dir_for_key(k: &ZFSKey) -> String {
+    format!("{}/{}", zfsd_upload_frags_dir(), &k.0)
 }
 
-pub fn zfsd_upload_frag_dir_to_key(path: &str) -> Option<String> {
+pub fn zfsd_upload_frag_dir_to_key(path: &str) -> Option<ZFSKey> {
     path.strip_prefix(&zfsd_upload_frags_dir())
-        .map(|s| s[1..].to_string()) // skip the initial "/"
+        .map(|s| ZFSKey(s[1..].to_string())) // skip the initial "/"
 }
 
 pub async fn zfs_read_download_digest_from(

@@ -10,6 +10,7 @@ pub async fn fragment(
     zkey: &str,
     fragment_size: usize,
 ) -> Result<crate::FragmentationDigest, String> {
+    let zfs_key = ZFSKey::from(zkey);
     match Crc::new(file_path).checksum() {
         Ok(checksum) => {
             let mut file = match File::open(file_path).await {
@@ -19,7 +20,7 @@ pub async fn fragment(
             let mut bs = vec![0_u8; fragment_size];
             log::debug!("bs.len() = {}", bs.len());
             let mut fid = 0;
-            let frag_path = zfsd_upload_frags_dir_for_key(zkey);
+            let frag_path = zfsd_upload_frags_dir_for_key(&zfs_key);
             log::debug!("Target dir: {:?}", frag_path);
             create_dir_all(Path::new(&frag_path)).await.unwrap();
             loop {
@@ -119,7 +120,8 @@ pub async fn write_defrag_digest(
     }
 }
 pub async fn defragment(key: &str, dest: &str) -> Result<bool, String> {
-    let fragments_path = zfsd_download_frags_dir_for_key(key);
+    let zfs_key = ZFSKey::from(key);
+    let fragments_path = zfsd_download_frags_dir_for_key(&zfs_key);
 
     match read_defrag_digest(&fragments_path).await {
         Ok(digest) => {
