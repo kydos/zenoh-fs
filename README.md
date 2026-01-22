@@ -1,5 +1,5 @@
 # zenoh-fs
-[![CI](https://github.com/kydos/zenoh-fs/actions/workflows/ci.yml/badge.svg)](https://github.com/kydos/zenoh-fs/actions/workflows/ci.yml)
+[![CI](https://github.com/kydos/zenoh-fs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kydos/zenoh-fs/actions/workflows/ci.yml)
 
 A Zenoh-based delay tolerant distributed file system supporting extremely large data files.
 
