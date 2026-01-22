@@ -4,6 +4,8 @@ use notify::{recommended_watcher, RecursiveMode, Result, Watcher};
 use std::fs::create_dir_all;
 use std::process::exit;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use zenoh::config::WhatAmI;
 use zfs::*;
 
@@ -18,12 +20,15 @@ fn init() -> Result<()> {
 #[tokio::main]
 async fn main() {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log::LevelFilter::Info)
         .format_target(true)
         .format_timestamp_secs()
         .init();
 
     log::info!(target: "zfsd", "Starting up...");
+
+    let zfs = Arc::new(Mutex::new(ZFS::new()));
+
     let zconf = parse_args();
 
     let z = std::sync::Arc::new(zenoh::open(zconf).await.unwrap());
@@ -50,9 +55,10 @@ async fn main() {
         )
         .unwrap();
 
-    tokio::task::spawn(download_sanitizer(z.clone()));
+    tokio::task::spawn(download_sanitizer(z.clone(), zfs.clone()));
 
     log::info!(target:"zfsd", "Up and Running!");
+
     while let Ok(r) = rx.recv() {
         if let Ok(evt) = r {
             if evt.kind.is_create() && !evt.paths.is_empty() && evt.paths[0].is_file() {
@@ -65,12 +71,14 @@ async fn main() {
 
                 if parent.ends_with(DOWNLOAD_SUBDIR) {
                     log::info!(target: "zfsd", "Downloading {:?}", &path);
-                    tokio::task::spawn(zfs::download(z.clone(), path.clone()).or_else(
-                        |e| async move {
-                            log::warn!("Failed to download due to: {}", e);
-                            Ok::<(), String>(())
-                        },
-                    ));
+                    tokio::task::spawn(
+                        zfs::download(z.clone(), zfs.clone(), path.clone()).or_else(
+                            |e| async move {
+                                log::warn!("Failed to download due to: {}", e);
+                                Ok::<(), String>(())
+                            },
+                        ),
+                    );
                 } else if parent.ends_with(UPLOAD_SUBDIR) {
                     log::info!(target: "zfsd","Fragmenting {:?}", &path);
                     let Some(p) = path.to_str() else {

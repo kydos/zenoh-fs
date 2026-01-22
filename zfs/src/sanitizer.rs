@@ -1,9 +1,15 @@
 use crate::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::fs;
+use tokio::sync::Mutex;
 use zenoh::Session;
 
-async fn cleanup_download(digest: &DownloadDigest, download_manifest: &str) -> Result<(), String> {
+pub async fn cleanup_download(
+    digest: &DownloadDigest,
+    download_manifest: &str,
+) -> Result<(), String> {
     // Check first if the file has been really created
     let target = std::path::Path::new(&digest.path);
     let zfs_key = ZFSKey::from(&digest.key);
@@ -17,6 +23,7 @@ async fn cleanup_download(digest: &DownloadDigest, download_manifest: &str) -> R
         if size == defrag_digest.size {
             let frags_path = zfsd_download_frags_dir_for_key(&zfs_key);
             let _ignore = std::fs::remove_dir_all(&frags_path);
+            log::info!("Removing file: {download_manifest}");
             let _ignore = std::fs::remove_file(std::path::Path::new(download_manifest));
         } else {
             log::debug!(
@@ -63,15 +70,55 @@ async fn compute_download_gaps(
     }
 }
 
-fn compute_acceleration_factor(stuck_cycles: usize) -> usize {
-    let r = (stuck_cycles / STUCK_CYCLES_RESET) + 1;
-    let a = std::cmp::max(1, r / 2);
-    let f = std::cmp::min(a * r, MAX_ACCELERATION);
-    log::debug!("Acceleration factor for {} is {}", stuck_cycles, f);
-    f
+// fn compute_acceleration_factor(stuck_cycles: usize) -> usize {
+//     let r = (stuck_cycles / STUCK_CYCLES_RESET) + 1;
+//     let a = std::cmp::max(1, r / 2);
+//     let f = std::cmp::min(a * r, MAX_ACCELERATION);
+//     log::debug!("Acceleration factor for {} is {}", stuck_cycles, f);
+//     f
+// }
+
+async fn repair_gaps(
+    z: Arc<zenoh::Session>,
+    zfs: Arc<Mutex<ZFS>>,
+    digest: DownloadDigest,
+    entry_path: PathBuf,
+    id: String,
+    pace: Duration,
+) {
+    let zfs_key = ZFSKey::from(&digest.key);
+    let mut gaps: Vec<usize> = compute_download_gaps(z.clone(), &digest)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+    for i in 0..3 {
+        log::info!(target: "Sanitizer", "Gaps repair iteration: {i}");
+        for g in gaps.iter() {
+            let _ = download_fragment(z.clone(), zfs_key.clone(), *g as u32).await;
+            tokio::time::sleep(pace).await;
+        }
+        gaps.clear();
+        gaps = compute_download_gaps(z.clone(), &digest)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        if gaps.is_empty() {
+            log::info!(target: "Sanitizer", "Reparied the download, file is ready at {}", digest.path);
+            log::info!(target: "Sanitizer", "Cleaning up {:?}", entry_path);
+            let _ = cleanup_download(&digest, &entry_path.to_string_lossy()).await;
+            (*zfs.lock().await).set_download_status(&id, DownloadStatus::Completed);
+            return;
+        } else {
+            gaps.sort_unstable();
+        }
+    }
+    (*zfs.lock().await).set_download_status(&id, DownloadStatus::Failed);
+    log::info!(target: "Sanitizer", "Failed to repar the download, in spite of trying very hard!");
 }
-pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
-    let mut registry = HashMap::<String, SanitizerRegistryEntry>::new();
+
+pub async fn download_sanitizer(z: Arc<zenoh::Session>, zfs: Arc<Mutex<ZFS>>) {
     let d3 = zfsd_download_digest_dir();
     let dpath = std::path::Path::new(&d3);
     loop {
@@ -80,110 +127,44 @@ pub async fn download_sanitizer(z: Arc<zenoh::Session>) {
         if let Ok(entries) = dpath.read_dir() {
             for entry in entries.flatten() {
                 log::debug!("Sanitizer looking into <{:?}>", &entry);
-                match registry.get_mut(entry.path().to_str().unwrap()) {
-                    Some(reg_entry) => {
-                        log::debug!("Registry {:?} exists for  <{:?}>", &reg_entry, &entry);
-                        let zfs_key = ZFSKey::from(&reg_entry.digest.key);
+                let id = entry.file_name().to_string_lossy().to_string();
+                let zfs_clone = zfs.clone();
+                let mut zfs = zfs.lock().await;
+                match zfs.get_download_status(&id) {
+                    None | Some(DownloadStatus::Failed) => {
+                        log::info!("Sanitizer reparing <{:?}>", &entry);
+                        (*zfs).set_download_status(&id, DownloadStatus::Reparing);
 
-                        if let Ok(gap_set) =
-                            compute_download_gaps(z.clone(), &reg_entry.digest).await
-                        {
-                            let mut gaps: Vec<usize> = gap_set.into_iter().collect();
-                            if gaps.is_empty() {
-                                log::debug!("Found <<NO GAPS>> for {:?}", &reg_entry.digest);
-                                cleanup_download(&reg_entry.digest, entry.path().to_str().unwrap())
-                                    .await
-                                    .unwrap();
-                            } else {
-                                log::info!(
-                                    "Found <<GAPS>> for {:?},  repairing",
-                                    &reg_entry.digest
-                                );
-                                gaps.sort_unstable();
-                                let new_gap_num = gaps.len();
-                                let filtered_gaps: Vec<usize> = gaps
-                                    .clone()
-                                    .into_iter()
-                                    .filter(|n| *n >= reg_entry.tide_level)
-                                    .collect();
-
-                                let delta = reg_entry.gap_nun - new_gap_num;
-                                log::debug!("Gaps delta is :\n\t{:?}", delta);
-                                if delta > 0 {
-                                    log::debug!("Udating tide and gaps");
-                                    reg_entry.tide_level = *filtered_gaps.first().unwrap_or(&0);
-                                    reg_entry.gap_nun = new_gap_num;
-                                } else {
-                                    reg_entry.stuck_cycles += 1;
-                                    if reg_entry.stuck_cycles % STUCK_CYCLES_RESET == 0 {
-                                        log::info!(
-                                            "Gaps recovery for {:?} seems to have stalled, this may be due to process restart of disconnections. Restarting fragment sanitiser.",
-                                            &zfs_key);
-                                        reg_entry.tide_level = 0;
-                                        let n = std::cmp::min(
-                                            gaps.len(),
-                                            GAP_DOWNLOAD_SCHEDULE
-                                                * compute_acceleration_factor(
-                                                    reg_entry.stuck_cycles,
-                                                ),
-                                        );
-                                        for i in 0..n {
-                                            reg_entry.tide_level = *gaps.get(i).unwrap();
-                                            tokio::task::spawn(download_fragment(
-                                                z.clone(),
-                                                zfs_key.clone(),
-                                                reg_entry.tide_level as u32,
-                                            ));
-                                        }
-                                    } else {
-                                        log::info!(
-                                            "Gaps recovery for {:?} is unusually slow -- no progress for the past {} sanitiser cycles",
-                                            &reg_entry.digest.key, reg_entry.stuck_cycles
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
-                            log::info!("Unable to compute gap for {:?}, the fragmentation manifest may be missing...", entry);
-                        }
-                    }
-                    None => {
                         let digest = zfs_read_download_digest_from(entry.path().as_path())
                             .await
                             .unwrap();
-                        log::debug!(target: "sanitizer", "Download Digest: {:?}", &digest);
-                        let mut gaps: Vec<usize> = compute_download_gaps(z.clone(), &digest)
-                            .await
-                            .unwrap()
-                            .into_iter()
-                            .collect();
-                        gaps.sort_unstable();
+                        log::info!(target: "sanitizer", "Download Digest: {:?}", &digest);
 
-                        if !gaps.is_empty() {
-                            let tide_level = *gaps.first().unwrap();
-                            let gap_nun = gaps.len();
-                            let sre = SanitizerRegistryEntry {
-                                digest: Arc::new(digest),
-                                tide_level,
-                                gap_nun,
-                                stuck_cycles: 0,
-                            };
-                            log::debug!(
-                                "Created registry entry {:?} exists for  <{:?}>",
-                                &sre,
-                                &entry.path()
-                            );
-                            registry.insert(entry.path().to_str().unwrap().into(), sre);
-                        } else {
-                            log::info!(
-                                "Sanitizer completed downloading for {:?} -- cleaning up.",
-                                &digest.key
-                            );
-                            cleanup_download(&digest, entry.path().to_str().unwrap())
-                                .await
-                                .unwrap();
-                        }
+                        tokio::task::spawn({
+                            repair_gaps(
+                                z.clone(),
+                                zfs_clone,
+                                digest,
+                                entry.path(),
+                                id.to_string(),
+                                DEFAULT_REPAIR_PACE.clone(),
+                            )
+                        });
                     }
+                    Some(DownloadStatus::Downloading) => {
+                        log::info!("Sanitizer ignoring <{:?}> as it is downloading", &entry);
+                        continue;
+                    }
+                    Some(DownloadStatus::Completed) => {
+                        (*zfs).set_download_status(&id, DownloadStatus::Cleaning);
+                        continue;
+                    }
+                    Some(DownloadStatus::Cleaning) => {
+                        (*zfs).remove_download(&id);
+                        let _ = fs::remove_file(&entry.path()).await;
+                        continue;
+                    }
+                    _ => continue,
                 }
             }
         } else {

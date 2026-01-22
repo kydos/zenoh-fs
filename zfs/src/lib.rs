@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
 pub const FS_EVT_DELAY: u64 = 1;
 pub const SANITIZER_PERIOD: Duration = Duration::from_secs(3);
+pub const DEFAULT_REPAIR_PACE: Duration = Duration::from_millis(0);
 pub const GAP_DOWNLOAD_SCHEDULE: usize = 32;
 pub const STUCK_CYCLES_RESET: usize = 3;
 pub const MAX_ACCELERATION: usize = 33;
@@ -61,6 +63,56 @@ pub struct FragmentationDigest {
     pub fragments: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum DownloadStatus {
+    Downloading,
+    Completed,
+    Reparing,
+    Failed,
+    Cleaning,
+}
+
+type DownloadRegistry = HashMap<String, DownloadStatus>;
+
+pub struct ZFS {
+    download_registry: DownloadRegistry,
+    file_registry: Vec<(String, String)>,
+}
+
+impl ZFS {
+    pub fn new() -> ZFS {
+        ZFS {
+            download_registry: HashMap::<String, DownloadStatus>::new(),
+            file_registry: Vec::<(String, String)>::new(),
+        }
+    }
+
+    pub fn add_download(&mut self, id: &str) {
+        self.download_registry
+            .insert(id.to_string(), DownloadStatus::Downloading);
+    }
+
+    pub fn remove_download(&mut self, id: &str) {
+        self.download_registry.remove(id);
+    }
+
+    pub fn get_download_status(&self, id: &str) -> Option<&DownloadStatus> {
+        self.download_registry.get(id)
+    }
+
+    pub fn set_download_status(&mut self, id: &str, status: DownloadStatus) {
+        self.download_registry.insert(id.to_string(), status);
+    }
+
+    pub fn add_file(&mut self, name: &str, key: &str) {
+        self.file_registry.push((name.to_string(), key.to_string()))
+    }
+
+    pub fn file_list(&self) -> &Vec<(String, String)> {
+        &self.file_registry
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadDigest {
     pub path: String,
@@ -68,20 +120,20 @@ pub struct UploadDigest {
     pub fragment_size: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DownloadDigest {
     pub key: String,
     pub path: String,
     pub pace: usize,
 }
 
-#[derive(Debug)]
-struct SanitizerRegistryEntry {
-    digest: std::sync::Arc<DownloadDigest>,
-    tide_level: usize,
-    gap_nun: usize,
-    stuck_cycles: usize,
-}
+// #[derive(Debug)]
+// struct SanitizerRegistryEntry {
+//     digest: std::sync::Arc<DownloadDigest>,
+//     tide_level: usize,
+//     gap_num: usize,
+//     stuck_cycles: usize,
+// }
 
 mod frag;
 mod sanitizer;

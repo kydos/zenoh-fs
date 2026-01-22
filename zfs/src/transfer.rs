@@ -3,10 +3,11 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use zenoh::qos::CongestionControl;
-
 use zenoh::query::*;
 use zenoh::Session;
+
 pub async fn upload_fragment(z: &Session, path: &str, zfs_key: &ZFSKey) {
     log::debug!(target: "transfer", "Uploading fragment {} for key {:?}", path, zfs_key);
     let path = PathBuf::from(path);
@@ -82,21 +83,41 @@ pub async fn download_fragmentation_digest(
 
 pub async fn download(
     z: std::sync::Arc<Session>,
+    zfs: Arc<Mutex<ZFS>>,
     download_spec_path: PathBuf,
 ) -> Result<(), String> {
-    let bs = std::fs::read(download_spec_path.as_path()).unwrap();
+    log::info!("Starting download for {:?}.", &download_spec_path);
+
+    let bs = match tokio::fs::read(download_spec_path.as_path()).await {
+        Ok(bs) => bs,
+        Err(e) => {
+            log::info!("Unable to read file at {:?}", download_spec_path.as_path());
+            return Err(format!(
+                "Unable to read file at {:?}\n",
+                download_spec_path.as_path()
+            ));
+        }
+    };
+
     let download_spec = match serde_json::from_slice::<DownloadDigest>(&bs) {
         Ok(ds) => ds,
-        Err(e) => return Err(format!("{:?}", e)),
+        Err(e) => {
+            log::info!("Failed to deserialize {:?} -- {e}.", &download_spec_path);
+            return Err(format!("{:?}", e));
+        }
     };
     let zfs_key = ZFSKey::from(&download_spec.key);
     if std::path::Path::new(&download_spec.path).exists() {
-        println!(
+        log::info!(
             "The file {} has already been downloaded.",
             &download_spec.path
         );
         return Ok(());
     }
+
+    let id = download_spec_path.file_name().unwrap().to_string_lossy();
+    (*zfs.lock().await).add_download(&id);
+    log::info!(target: "tranfer", "Set {} status to Downloading", &id);
 
     // let frag_digest = format!("{}/{}/{}", zfs_upload_frags_key_prefix(), download_spec.key, ZFS_DIGEST);
     let frag_digest = zfs_frags_digest_for_key(&zfs_key);
@@ -125,7 +146,7 @@ pub async fn download(
     match p.parent() {
         Some(parent) => {
             std::fs::create_dir_all(parent).unwrap();
-            defragment(&download_spec.key, &download_spec.path)
+            let _ = defragment(&download_spec.key, &download_spec.path)
                 .await
                 .map(|r| {
                     if r {
@@ -136,7 +157,9 @@ pub async fn download(
                             &download_spec.key
                         )
                     }
-                })
+                });
+
+            sanitizer::cleanup_download(&download_spec, &download_spec_path.to_string_lossy()).await
         }
         None => {
             log::warn!(target: "zfsd", "Invalid target path: {:?}\n Unable to defragment", p);
