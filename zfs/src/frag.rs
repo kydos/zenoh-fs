@@ -303,7 +303,13 @@ mod tests {
 
         let zkey = format!("{}/smallkey", test_id);
         let fragment_size = 1024; // Larger than file
-        let result = fragment(zfs.clone(), source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        let result = fragment(
+            zfs.clone(),
+            source_file.to_str().unwrap(),
+            &zkey,
+            fragment_size,
+        )
+        .await;
         assert!(result.is_ok());
 
         let digest = result.unwrap();
@@ -332,7 +338,13 @@ mod tests {
 
         let zkey = format!("{}/exactkey", test_id);
         let fragment_size = 128;
-        let result = fragment(zfs.clone(), source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        let result = fragment(
+            zfs.clone(),
+            source_file.to_str().unwrap(),
+            &zkey,
+            fragment_size,
+        )
+        .await;
         assert!(result.is_ok());
 
         let digest = result.unwrap();
