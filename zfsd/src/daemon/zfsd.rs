@@ -242,7 +242,7 @@ fn parse_args() -> (ZFSConfig, zenoh::config::Config) {
         } else if *v > 7 {
             zenoh::qos::Priority::Background
         } else {
-            zenoh::qos::Priority::try_from(*v as u8).unwrap()
+            zenoh::qos::Priority::try_from(*v).unwrap()
         }
     } else {
         zenoh::qos::Priority::Background
@@ -251,12 +251,10 @@ fn parse_args() -> (ZFSConfig, zenoh::config::Config) {
     let home = {
         if let Some(h) = args.get_one::<String>("home") {
             h.to_string()
+        } else if let Ok(path) = std::env::var("ZFSD_HOME") {
+            path
         } else {
-            if let Ok(path) = std::env::var("ZFSD_HOME") {
-                path
-            } else {
-                format!("{}/{}", std::env::var("HOME").unwrap(), ".zfsd")
-            }
+            format!("{}/{}", std::env::var("HOME").unwrap(), ".zfsd")
         }
     };
     let zfsc = ZFSConfigBuilder::default()

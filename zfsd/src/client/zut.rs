@@ -58,12 +58,10 @@ fn parse_args() -> (String, String, usize, String) {
     let home = {
         if let Some(h) = args.get_one::<String>("home") {
             h.to_string()
+        } else if let Ok(path) = std::env::var("ZFSD_HOME") {
+            path
         } else {
-            if let Ok(path) = std::env::var("ZFSD_HOME") {
-                path
-            } else {
-                format!("{}/{}", std::env::var("HOME").unwrap(), ".zfsd")
-            }
+            format!("{}/{}", std::env::var("HOME").unwrap(), ".zfsd")
         }
     };
 
