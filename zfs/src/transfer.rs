@@ -6,23 +6,43 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use zenoh::qos::CongestionControl;
 use zenoh::query::*;
-use zenoh::Session;
 
-pub async fn upload_fragment(z: &Session, path: &str, zfs_key: &ZFSKey) {
+pub async fn upload_fragment(zfs: Arc<Mutex<ZFS>>, path: &str, zfs_key: &ZFSKey) {
+    let (z, prio) = {
+        let zfs = zfs.lock().await;
+        (zfs.z_session.clone(), zfs.upload_priority)
+    };
     log::debug!(target: "transfer", "Uploading fragment {} for key {:?}", path, zfs_key);
     let path = PathBuf::from(path);
     let bs = std::fs::read(path.as_path())
         .unwrap_or_else(|_| panic!("path: {} should be valid", &path.to_string_lossy()));
     z.put(&zfs_key.0, bs)
         .congestion_control(CongestionControl::Block)
+        .priority(prio)
         .await
         .unwrap();
 }
 
-pub async fn download_fragment(z: Arc<Session>, zfs_key: ZFSKey, n: u32) -> Result<(), String> {
+pub async fn download_fragment(
+    zfs: Arc<Mutex<ZFS>>,
+    zfs_key: ZFSKey,
+    n: u32,
+    recovery: bool,
+) -> Result<(), String> {
     log::debug!(target: "transfer", "Downloading fragment # {} for key {:?}", n, &zfs_key);
-
-    let path = zfsd_download_frags_dir_for_key(&zfs_key);
+    let (z, prio, home) = {
+        let zfs = zfs.lock().await;
+        (
+            zfs.z_session.clone(),
+            if recovery {
+                zfs.recovery_priority
+            } else {
+                zfs.download_priority
+            },
+            zfs.home.clone(),
+        )
+    };
+    let path = zfsd_download_frags_dir_for_key(home, &zfs_key);
     // let frag_key = format!("{}/{}/{}", zfs_upload_frags_key_prefix(), key, n);
     let frag_key = zfs_nth_frag_key(&zfs_key, n);
     let frag = format!("{}/{}", &path, n);
@@ -40,6 +60,7 @@ pub async fn download_fragment(z: Arc<Session>, zfs_key: ZFSKey, n: u32) -> Resu
     let replies = z
         .get(&frag_key.clone())
         .target(QueryTarget::DEFAULT)
+        .priority(prio)
         .await
         .unwrap();
 
@@ -58,13 +79,18 @@ pub async fn download_fragment(z: Arc<Session>, zfs_key: ZFSKey, n: u32) -> Resu
     }
 }
 pub async fn download_fragmentation_digest(
-    z: std::sync::Arc<Session>,
+    zfs: Arc<Mutex<ZFS>>,
     digest_key: &str,
 ) -> Result<FragmentationDigest, String> {
     log::debug!(target: "zfsd", "Retrieving fragmentation digest: {}", &digest_key);
+    let (z, prio) = {
+        let zfs = zfs.lock().await;
+        (zfs.z_session.clone(), zfs.download_priority)
+    };
     let replies = z
         .get(digest_key)
         .target(QueryTarget::DEFAULT)
+        .priority(prio)
         .await
         .unwrap();
 
@@ -81,19 +107,15 @@ pub async fn download_fragmentation_digest(
     }
 }
 
-pub async fn download(
-    z: std::sync::Arc<Session>,
-    zfs: Arc<Mutex<ZFS>>,
-    download_spec_path: PathBuf,
-) -> Result<(), String> {
+pub async fn download(zfs: Arc<Mutex<ZFS>>, download_spec_path: PathBuf) -> Result<(), String> {
     log::info!("Starting download for {:?}.", &download_spec_path);
-
+    let home = zfs.lock().await.home.clone();
     let bs = match tokio::fs::read(download_spec_path.as_path()).await {
         Ok(bs) => bs,
         Err(e) => {
             log::info!("Unable to read file at {:?}", download_spec_path.as_path());
             return Err(format!(
-                "Unable to read file at {:?}\n",
+                "Unable to read file at {:?} because of {e}\n",
                 download_spec_path.as_path()
             ));
         }
@@ -117,14 +139,15 @@ pub async fn download(
 
     let id = download_spec_path.file_name().unwrap().to_string_lossy();
     (*zfs.lock().await).add_download(&id);
+
     log::info!(target: "tranfer", "Set {} status to Downloading", &id);
 
     // let frag_digest = format!("{}/{}/{}", zfs_upload_frags_key_prefix(), download_spec.key, ZFS_DIGEST);
     let frag_digest = zfs_frags_digest_for_key(&zfs_key);
     log::debug!(target: "tranfer", "Get Frag Digest: {}", &frag_digest);
-    let digest = download_fragmentation_digest(z.clone(), &frag_digest).await?;
+    let digest = download_fragmentation_digest(zfs.clone(), &frag_digest).await?;
 
-    let frags_dir = zfsd_download_frags_dir_for_key(&zfs_key);
+    let frags_dir = zfsd_download_frags_dir_for_key(home, &zfs_key);
     tokio::fs::create_dir_all(std::path::Path::new(&frags_dir))
         .await
         .unwrap();
@@ -137,7 +160,7 @@ pub async fn download(
 
     write_defrag_digest(&digest, &frags_dir).await?;
     for i in 0..digest.fragments {
-        download_fragment(z.clone(), zfs_key.clone(), i).await?;
+        download_fragment(zfs.clone(), zfs_key.clone(), i, false).await?;
         bar.inc(1);
     }
 
@@ -146,7 +169,7 @@ pub async fn download(
     match p.parent() {
         Some(parent) => {
             std::fs::create_dir_all(parent).unwrap();
-            let _ = defragment(&download_spec.key, &download_spec.path)
+            let _ = defragment(zfs.clone(), &download_spec.key, &download_spec.path)
                 .await
                 .map(|r| {
                     if r {
@@ -159,7 +182,12 @@ pub async fn download(
                     }
                 });
 
-            sanitizer::cleanup_download(&download_spec, &download_spec_path.to_string_lossy()).await
+            sanitizer::cleanup_download(
+                zfs.clone(),
+                &download_spec,
+                &download_spec_path.to_string_lossy(),
+            )
+            .await
         }
         None => {
             log::warn!(target: "zfsd", "Invalid target path: {:?}\n Unable to defragment", p);

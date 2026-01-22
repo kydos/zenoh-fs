@@ -6,10 +6,12 @@ use tokio::fs::{create_dir_all, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn fragment(
+    zfs: Arc<Mutex<ZFS>>,
     file_path: &str,
     zkey: &str,
     fragment_size: usize,
 ) -> Result<crate::FragmentationDigest, String> {
+    let home = zfs.lock().await.home.clone();
     let zfs_key = ZFSKey::from(zkey);
     match Crc::new(file_path).checksum() {
         Ok(checksum) => {
@@ -20,7 +22,7 @@ pub async fn fragment(
             let mut bs = vec![0_u8; fragment_size];
             log::debug!("bs.len() = {}", bs.len());
             let mut fid = 0;
-            let frag_path = zfsd_upload_frags_dir_for_key(&zfs_key);
+            let frag_path = zfsd_upload_frags_dir_for_key(home, &zfs_key);
             log::debug!("Target dir: {:?}", frag_path);
             create_dir_all(Path::new(&frag_path)).await.unwrap();
             loop {
@@ -61,22 +63,23 @@ pub async fn fragment(
     }
 }
 
-pub async fn fragment_from_digest(path: String) -> Result<(), String> {
+pub async fn fragment_from_digest(zfs: Arc<Mutex<ZFS>>, path: String) -> Result<(), String> {
     let path = PathBuf::from(path);
-    let mut target = PathBuf::from(path.parent().unwrap());
-    target.push(crate::FRAGS_SUBDIR);
+    // let mut target = PathBuf::from(path.parent().unwrap());
+    // target.push(frag_size);
 
     let bs = std::fs::read(path.as_path()).unwrap();
     let upload_spec = match serde_json::from_slice::<crate::UploadDigest>(&bs) {
         Ok(us) => us,
         Err(e) => return Err(format!("{:?}", e)),
     };
-    log::debug!(target: "zfsd", "Uploading: {} as {}", &upload_spec.path, &upload_spec.key);
+    // log::debug!(target: "zfsd", "Uploading: {} as {}", &upload_spec.path, &upload_spec.key);
     if !std::path::Path::new(&upload_spec.path).exists() {
-        log::warn!(target: "zfsd", "The file {} does not exit", &upload_spec.path);
+        // log::warn!(target: "zfsd", "The file {} does not exit", &upload_spec.path);
         return Ok(());
     }
     crate::frag::fragment(
+        zfs,
         &upload_spec.path,
         &upload_spec.key,
         upload_spec.fragment_size,
@@ -119,9 +122,10 @@ pub async fn write_defrag_digest(
         )),
     }
 }
-pub async fn defragment(key: &str, dest: &str) -> Result<bool, String> {
+pub async fn defragment(zfs: Arc<Mutex<ZFS>>, key: &str, dest: &str) -> Result<bool, String> {
+    let home = zfs.lock().await.home.clone();
     let zfs_key = ZFSKey::from(key);
-    let fragments_path = zfsd_download_frags_dir_for_key(&zfs_key);
+    let fragments_path = zfsd_download_frags_dir_for_key(home, &zfs_key);
 
     match read_defrag_digest(&fragments_path).await {
         Ok(digest) => {

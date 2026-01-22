@@ -1,7 +1,10 @@
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 pub const FS_EVT_DELAY: u64 = 1;
 pub const SANITIZER_PERIOD: Duration = Duration::from_secs(3);
@@ -17,6 +20,8 @@ pub const UPLOAD_SUBDIR: &str = "upload";
 pub const FRAGS_SUBDIR: &str = "frags";
 pub const DIGEST_SUBDIR: &str = "digest";
 pub const FRAGMENT_SIZE: usize = 32 * 1024;
+
+pub const DEFAULT_REGISTRY_KEY: &str = "zfsd/registry/*";
 
 /// The ZFS structure is as follows:
 ///
@@ -74,17 +79,34 @@ pub enum DownloadStatus {
 
 type DownloadRegistry = HashMap<String, DownloadStatus>;
 
+#[derive(Builder)]
 pub struct ZFS {
+    #[builder(default)]
     download_registry: DownloadRegistry,
+    #[builder(default)]
     file_registry: Vec<(String, String)>,
+    #[builder(default = DEFAULT_REPAIR_PACE)]
+    recovery_pace: Duration,
+    #[builder(default = zenoh::qos::Priority::Background)]
+    recovery_priority: zenoh::qos::Priority,
+    #[builder(default = zenoh::qos::Priority::Background)]
+    upload_priority: zenoh::qos::Priority,
+    #[builder(default = zenoh::qos::Priority::Background)]
+    download_priority: zenoh::qos::Priority,
+    #[builder(default = DEFAULT_REGISTRY_KEY.to_string())]
+    registry_key: String,
+    home: String,
+    z_session: Arc<zenoh::Session>,
 }
 
 impl ZFS {
-    pub fn new() -> ZFS {
-        ZFS {
-            download_registry: HashMap::<String, DownloadStatus>::new(),
-            file_registry: Vec::<(String, String)>::new(),
-        }
+    pub fn init(&self) -> Result<(), std::io::Error> {
+        let home = self.home.clone();
+        use std::fs::create_dir_all;
+        create_dir_all(zfsd_upload_frags_dir(home.clone()))
+            .and(create_dir_all(zfsd_download_frags_dir(home.clone())))
+            .and(create_dir_all(zfsd_upload_digest_dir(home.clone())))
+            .and(create_dir_all(zfsd_download_digest_dir(home)))
     }
 
     pub fn add_download(&mut self, id: &str) {
@@ -127,14 +149,6 @@ pub struct DownloadDigest {
     pub pace: usize,
 }
 
-// #[derive(Debug)]
-// struct SanitizerRegistryEntry {
-//     digest: std::sync::Arc<DownloadDigest>,
-//     tide_level: usize,
-//     gap_num: usize,
-//     stuck_cycles: usize,
-// }
-
 mod frag;
 mod sanitizer;
 mod transfer;
@@ -165,13 +179,9 @@ pub fn zfs_err2str<E: Debug>(e: E) -> String {
     format!("{:?}", e)
 }
 
-pub fn zfsd_home() -> String {
-    if let Ok(path) = std::env::var("ZFSD_HOME") {
-        path
-    } else {
-        format!("{}/{}", std::env::var("HOME").unwrap(), ".zfsd")
-    }
-}
+// pub asyfn zfsd_home(zfs: Arc<Mutex<ZFS>>) -> String {
+//     zfs.lock().await.home.clone()
+// }
 
 // ZFS key-related functions
 // pub fn zfs_key(key: &str) -> String {
@@ -190,31 +200,31 @@ pub fn zfs_nth_frag_key(key: &ZFSKey, n: u32) -> String {
 }
 
 // ZFSD path-related functions
-pub fn zfsd_upload_digest_dir() -> String {
-    format!("{}/{}/{}", zfsd_home(), DIGEST_SUBDIR, UPLOAD_SUBDIR)
+pub fn zfsd_upload_digest_dir(zfsd_home: String) -> String {
+    format!("{}/{}/{}", zfsd_home, DIGEST_SUBDIR, UPLOAD_SUBDIR)
 }
-pub fn zfsd_download_digest_dir() -> String {
-    format!("{}/{}/{}", zfsd_home(), DIGEST_SUBDIR, DOWNLOAD_SUBDIR)
-}
-
-pub fn zfsd_upload_frags_dir() -> String {
-    format!("{}/{}/{}", zfsd_home(), FRAGS_SUBDIR, UPLOAD_SUBDIR)
+pub fn zfsd_download_digest_dir(zfsd_home: String) -> String {
+    format!("{}/{}/{}", zfsd_home, DIGEST_SUBDIR, DOWNLOAD_SUBDIR)
 }
 
-pub fn zfsd_download_frags_dir() -> String {
-    format!("{}/{}/{}", zfsd_home(), FRAGS_SUBDIR, DOWNLOAD_SUBDIR)
+pub fn zfsd_upload_frags_dir(zfsd_home: String) -> String {
+    format!("{}/{}/{}", zfsd_home, FRAGS_SUBDIR, UPLOAD_SUBDIR)
 }
 
-pub fn zfsd_download_frags_dir_for_key(k: &ZFSKey) -> String {
-    format!("{}/{}", zfsd_download_frags_dir(), &k.0)
+pub fn zfsd_download_frags_dir(zfsd_home: String) -> String {
+    format!("{}/{}/{}", zfsd_home, FRAGS_SUBDIR, DOWNLOAD_SUBDIR)
 }
 
-pub fn zfsd_upload_frags_dir_for_key(k: &ZFSKey) -> String {
-    format!("{}/{}", zfsd_upload_frags_dir(), &k.0)
+pub fn zfsd_download_frags_dir_for_key(zfsd_home: String, k: &ZFSKey) -> String {
+    format!("{}/{}", zfsd_download_frags_dir(zfsd_home), &k.0)
 }
 
-pub fn zfsd_upload_frag_dir_to_key(path: &str) -> Option<ZFSKey> {
-    path.strip_prefix(&zfsd_upload_frags_dir())
+pub fn zfsd_upload_frags_dir_for_key(zfsd_home: String, k: &ZFSKey) -> String {
+    format!("{}/{}", zfsd_upload_frags_dir(zfsd_home), &k.0)
+}
+
+pub fn zfsd_upload_frag_dir_to_key(zfsd_home: String, path: &str) -> Option<ZFSKey> {
+    path.strip_prefix(&zfsd_upload_frags_dir(zfsd_home))
         .map(|s| ZFSKey(s[1..].to_string())) // skip the initial "/"
 }
 
