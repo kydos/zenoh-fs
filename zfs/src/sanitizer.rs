@@ -12,14 +12,14 @@ pub async fn cleanup_download(
 ) -> Result<(), String> {
     let home = zfs.lock().await.home.clone();
     // Check first if the file has been really created
+
     let target = std::path::Path::new(&digest.path);
     let zfs_key = ZFSKey::from(&digest.key);
     let frags_path = zfsd_download_frags_dir_for_key(home.clone(), &zfs_key);
-    let fmanif_exists = std::path::Path::new(&format!("{}/{}", &frags_path, ZFS_DIGEST)).exists();
-    if target.exists() && fmanif_exists {
+
+    if target.exists() {
         let defrag_digest = read_defrag_digest(&frags_path).await.unwrap();
         let size = target.metadata().unwrap().len();
-
         tokio::time::sleep(Duration::from_secs(2 * FS_EVT_DELAY)).await;
         if size == defrag_digest.size {
             let frags_path = zfsd_download_frags_dir_for_key(home, &zfs_key);
@@ -32,9 +32,12 @@ pub async fn cleanup_download(
 
             );
         }
-    } else if !target.exists() && fmanif_exists {
+    } else {
         // We try to defragment...
         let _ignore = defragment(zfs.clone(), &digest.key, &digest.path).await;
+        log::info!("Removing file: {download_manifest}");
+        let _ignore = std::fs::remove_file(std::path::Path::new(download_manifest));
+        let _ignore = std::fs::remove_dir_all(&frags_path);
     }
     Ok(())
 }
@@ -108,6 +111,7 @@ async fn repair_gaps(
         if gaps.is_empty() {
             log::info!(target: "Sanitizer", "Reparied the download, file is ready at {}", digest.path);
             log::info!(target: "Sanitizer", "Cleaning up {:?}", entry_path);
+            let _ = defragment(zfs.clone(), &digest.key, &digest.path).await;
             let _ = cleanup_download(zfs.clone(), &digest, &entry_path.to_string_lossy()).await;
             (*zfs.lock().await).set_download_status(&id, DownloadStatus::Completed);
             return;

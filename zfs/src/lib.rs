@@ -76,6 +76,19 @@ pub enum DownloadStatus {
     Failed,
     Cleaning,
 }
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct UploadDigest {
+    pub path: String,
+    pub key: String,
+    pub fragment_size: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DownloadDigest {
+    pub key: String,
+    pub path: String,
+    pub pace: usize,
+}
 
 type DownloadRegistry = HashMap<String, DownloadStatus>;
 
@@ -84,7 +97,7 @@ pub struct ZFS {
     #[builder(default)]
     download_registry: DownloadRegistry,
     #[builder(default)]
-    file_registry: Vec<(String, String)>,
+    file_registry: Arc<Mutex<Vec<UploadDigest>>>,
     #[builder(default = DEFAULT_REPAIR_PACE)]
     recovery_pace: Duration,
     #[builder(default = zenoh::qos::Priority::Background)]
@@ -100,7 +113,36 @@ pub struct ZFS {
 }
 
 impl ZFS {
-    pub fn init(&self) -> Result<(), std::io::Error> {
+    pub async fn init(&self) -> Result<(), std::io::Error> {
+        let queryable = self
+            .z_session
+            .declare_queryable(self.registry_key.clone())
+            .await
+            .unwrap();
+        let registry = self.file_registry.clone();
+
+        tokio::task::spawn(async move {
+            loop {
+                match queryable.recv_async().await {
+                    Ok(query) => {
+                        log::info!("Reveived query!!!");
+                        let key_expr = query.key_expr();
+                        let bs = {
+                            let reg = registry.lock().await;
+                            log::info!("Answering: {:?}", reg);
+                            serde_json::to_vec(&*reg).unwrap()
+                        };
+                        let _ = query.reply(key_expr, bs).await;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "File Registry encountered an error while replying query: \n{:?}",
+                            e
+                        );
+                    }
+                }
+            }
+        });
         let home = self.home.clone();
         use std::fs::create_dir_all;
         create_dir_all(zfsd_upload_frags_dir(home.clone()))
@@ -125,28 +167,6 @@ impl ZFS {
     pub fn set_download_status(&mut self, id: &str, status: DownloadStatus) {
         self.download_registry.insert(id.to_string(), status);
     }
-
-    pub fn add_file(&mut self, name: &str, key: &str) {
-        self.file_registry.push((name.to_string(), key.to_string()))
-    }
-
-    pub fn file_list(&self) -> &Vec<(String, String)> {
-        &self.file_registry
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UploadDigest {
-    pub path: String,
-    pub key: String,
-    pub fragment_size: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DownloadDigest {
-    pub key: String,
-    pub path: String,
-    pub pace: usize,
 }
 
 mod frag;

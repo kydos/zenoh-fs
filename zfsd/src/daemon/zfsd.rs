@@ -32,7 +32,7 @@ async fn main() {
         .build()
         .unwrap();
 
-    zfs.init().expect("zfsd failed to initalise!");
+    zfs.init().await.expect("zfsd failed to initalise!");
     let zfs = Arc::new(Mutex::new(zfs));
 
     let (tx, rx) = channel();

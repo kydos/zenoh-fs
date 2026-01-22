@@ -78,6 +78,13 @@ pub async fn fragment_from_digest(zfs: Arc<Mutex<ZFS>>, path: String) -> Result<
         // log::warn!(target: "zfsd", "The file {} does not exit", &upload_spec.path);
         return Ok(());
     }
+    zfs.lock()
+        .await
+        .file_registry
+        .lock()
+        .await
+        .push(upload_spec.clone());
+
     crate::frag::fragment(
         zfs,
         &upload_spec.path,
