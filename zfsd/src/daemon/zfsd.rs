@@ -135,8 +135,8 @@ struct ZFSConfig {
 }
 
 fn parse_args() -> (ZFSConfig, zenoh::config::Config) {
-    let args = Command::new("zenoh's distributed and latency tolerant file system")
-        .about("A distributed and latency tolerant file-system built on zenoh")
+    let args = Command::new("zenoh's distributed and delay tolerant file system")
+        .about("A distributed and delay tolerant file-system built on zenoh")
         .arg(
             Arg::new("mode")
                 .short('m')
