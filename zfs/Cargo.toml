@@ -20,4 +20,4 @@ derive_builder = "0.20.2"
 
 [dev-dependencies]
 uuid = { version = "1.19.0", features = ["v4"] }
-serial_test = "3.2"
+serial_test = "3.3.1"

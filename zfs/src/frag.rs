@@ -129,6 +129,7 @@ pub async fn write_defrag_digest(
         )),
     }
 }
+
 pub async fn defragment(zfs: Arc<Mutex<ZFS>>, key: &str, dest: &str) -> Result<bool, String> {
     let home = zfs.lock().await.home.clone();
     let zfs_key = ZFSKey::from(key);
@@ -172,6 +173,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
+    async fn create_test_zfs(home: &str) -> Arc<Mutex<ZFS>> {
+        let config = zenoh::Config::default();
+        let session = Arc::new(zenoh::open(config).await.unwrap());
+        let zfs = ZFSBuilder::default()
+            .home(home.to_string())
+            .z_session(session)
+            .build()
+            .unwrap();
+        Arc::new(Mutex::new(zfs))
+    }
+
     #[tokio::test]
     async fn test_write_and_read_defrag_digest() {
         let test_dir = create_test_dir();
@@ -210,14 +222,15 @@ mod tests {
         cleanup_test_dir(&test_dir);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     #[serial]
     async fn test_fragment_and_defragment_roundtrip() {
         let test_dir = create_test_dir();
         let test_id = test_dir.file_name().unwrap().to_str().unwrap();
+        let home = test_dir.to_str().unwrap().to_string();
 
-        // Set ZFSD_HOME to our test directory for isolation
-        std::env::set_var("ZFSD_HOME", test_dir.to_str().unwrap());
+        // Create ZFS instance for testing
+        let zfs = create_test_zfs(&home).await;
 
         // Create a test file with known content
         let source_file = test_dir.join("source.bin");
@@ -229,8 +242,15 @@ mod tests {
 
         // Fragment the file
         let zkey = format!("{}/testkey", test_id);
+        let zfs_key = ZFSKey::from(&zkey);
         let fragment_size = 256;
-        let result = fragment(source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        let result = fragment(
+            zfs.clone(),
+            source_file.to_str().unwrap(),
+            &zkey,
+            fragment_size,
+        )
+        .await;
         assert!(result.is_ok());
 
         let digest = result.unwrap();
@@ -238,8 +258,8 @@ mod tests {
         assert_eq!(digest.fragments, 4); // 1000 bytes / 256 = 3.9, so 4 fragments
 
         // Copy fragments to download location to simulate download
-        let upload_frags = zfsd_upload_frags_dir_for_key(&zkey);
-        let download_frags = zfsd_download_frags_dir_for_key(&zkey);
+        let upload_frags = zfsd_upload_frags_dir_for_key(home.clone(), &zfs_key);
+        let download_frags = zfsd_download_frags_dir_for_key(home.clone(), &zfs_key);
         std::fs::create_dir_all(&download_frags).unwrap();
 
         for i in 0..digest.fragments {
@@ -252,7 +272,7 @@ mod tests {
 
         // Defragment the file
         let dest_file = test_dir.join("dest.bin");
-        let defrag_result = defragment(&zkey, dest_file.to_str().unwrap()).await;
+        let defrag_result = defragment(zfs.clone(), &zkey, dest_file.to_str().unwrap()).await;
         assert!(defrag_result.is_ok());
         assert!(defrag_result.unwrap()); // CRC should match
 
@@ -263,13 +283,15 @@ mod tests {
         cleanup_test_dir(&test_dir);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     #[serial]
     async fn test_fragment_small_file() {
         let test_dir = create_test_dir();
         let test_id = test_dir.file_name().unwrap().to_str().unwrap();
+        let home = test_dir.to_str().unwrap().to_string();
 
-        std::env::set_var("ZFSD_HOME", test_dir.to_str().unwrap());
+        // Create ZFS instance for testing
+        let zfs = create_test_zfs(&home).await;
 
         // Create a small file (smaller than fragment size)
         let source_file = test_dir.join("small.bin");
@@ -281,7 +303,7 @@ mod tests {
 
         let zkey = format!("{}/smallkey", test_id);
         let fragment_size = 1024; // Larger than file
-        let result = fragment(source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        let result = fragment(zfs.clone(), source_file.to_str().unwrap(), &zkey, fragment_size).await;
         assert!(result.is_ok());
 
         let digest = result.unwrap();
@@ -290,13 +312,15 @@ mod tests {
         cleanup_test_dir(&test_dir);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     #[serial]
     async fn test_fragment_exact_multiple() {
         let test_dir = create_test_dir();
         let test_id = test_dir.file_name().unwrap().to_str().unwrap();
+        let home = test_dir.to_str().unwrap().to_string();
 
-        std::env::set_var("ZFSD_HOME", test_dir.to_str().unwrap());
+        // Create ZFS instance for testing
+        let zfs = create_test_zfs(&home).await;
 
         // Create a file that's exactly a multiple of fragment size
         let source_file = test_dir.join("exact.bin");
@@ -308,7 +332,7 @@ mod tests {
 
         let zkey = format!("{}/exactkey", test_id);
         let fragment_size = 128;
-        let result = fragment(source_file.to_str().unwrap(), &zkey, fragment_size).await;
+        let result = fragment(zfs.clone(), source_file.to_str().unwrap(), &zkey, fragment_size).await;
         assert!(result.is_ok());
 
         let digest = result.unwrap();
